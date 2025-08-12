@@ -34,7 +34,7 @@ except Exception:
 ###############################################################
 # Config
 ###############################################################
-APP_TITLE = "RAGnostic‑Lite"
+APP_TITLE = "RAGnostic"
 EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # 384‑dim, fast
 TOP_K = 5
 CHUNK_SIZE = 800
