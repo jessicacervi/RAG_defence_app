@@ -1,28 +1,5 @@
 # RAGnostic‑Lite (single‑file Streamlit app)
-# -------------------------------------------------------------
-# What this is:
-#   A compact Retrieval‑Augmented Generation (RAG) demo that lets you:
-#   • Upload docs (PDF, TXT, MD)
-#   • Build a local FAISS index with MiniLM embeddings
-#   • Ask questions and get grounded answers with source citations
-#   • See the retrieved chunks and scores for transparency
-#   • Apply lightweight prompt‑injection heuristics (detect + optionally filter)
-#
-# Why single‑file? Easy to copy/paste and run.
-#
-# -------------------------------------------------------------
-# Quickstart
-#   1) pip install -U streamlit pypdf faiss-cpu sentence-transformers openai tiktoken
-#      (optional extras: instructor, rank-bm25, rapidfuzz)
-#   2) export OPENAI_API_KEY=...   # if you want OpenAI as the generator
-#   3) streamlit run ragnostic_lite.py
-#
-# Notes
-#   • If you don’t have an OpenAI key, the app can answer using only retrieved
-#     snippets (extractive mode) as a fallback.
-#   • This is a learning tool; do NOT use it for production without hardening.
-#
-# -------------------------------------------------------------
+
 
 import os
 import io
@@ -227,8 +204,8 @@ def init_state():
 
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="📚", layout="wide")
-    st.title("📚 RAGnostic‑Lite")
-    st.caption("A tiny RAG demo with transparency and basic prompt‑injection checks.")
+    st.title("RAGnostic‑Lite")
+    st.caption("A RAG demo with transparency and basic prompt‑injection checks.")
 
     init_state()
 
@@ -308,10 +285,6 @@ def main():
                 st.caption("Flagged by simple keyword heuristics; tune the threshold and patterns for your data.")
 
     st.divider()
-    st.markdown(
-        "Made for learning. Hardening ideas: role‑based source trust, domain allowlists, sandboxed tool use,\n"
-        "structured outputs with citations, logging & eval harness."
-    )
 
 
 if __name__ == "__main__":
