@@ -1,5 +1,28 @@
 # RAGnostic‑Lite (single‑file Streamlit app)
-
+# -------------------------------------------------------------
+# What this is:
+#   A compact Retrieval‑Augmented Generation (RAG) demo that lets you:
+#   • Upload docs (PDF, TXT, MD)
+#   • Build a local FAISS index with MiniLM embeddings
+#   • Ask questions and get grounded answers with source citations
+#   • See the retrieved chunks and scores for transparency
+#   • Apply lightweight prompt‑injection heuristics (detect + optionally filter)
+#
+# Why single‑file? Easy to copy/paste and run.
+#
+# -------------------------------------------------------------
+# Quickstart
+#   1) pip install -U streamlit pypdf faiss-cpu sentence-transformers openai tiktoken
+#      (optional extras: instructor, rank-bm25, rapidfuzz)
+#   2) export OPENAI_API_KEY=...   # if you want OpenAI as the generator
+#   3) streamlit run ragnostic_lite.py
+#
+# Notes
+#   • If you don’t have an OpenAI key, the app can answer using only retrieved
+#     snippets (extractive mode) as a fallback.
+#   • This is a learning tool; do NOT use it for production without hardening.
+#
+# -------------------------------------------------------------
 
 import os
 import io
@@ -34,11 +57,15 @@ except Exception:
 ###############################################################
 # Config
 ###############################################################
-APP_TITLE = "RAGnostic"
-EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # 384‑dim, fast
+APP_TITLE = "RAGnostic‑Lite"
+EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"  # kept for reference
 TOP_K = 5
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 120
+
+# === Embedding provider switch ===
+# Force OpenAI embeddings only (skips Hugging Face downloads entirely)
+FORCE_OPENAI_EMBEDDINGS = True
 
 ###############################################################
 # Utilities
@@ -89,19 +116,70 @@ class DocChunk:
     text: str
 
 
+@st.cache_resource
+def _get_st_embedder(model_name: str):
+    # This won't be used when FORCE_OPENAI_EMBEDDINGS is True
+    token = os.getenv("HUGGINGFACE_HUB_TOKEN")
+    model = SentenceTransformer(model_name, cache_folder=".models", use_auth_token=token if token else None)
+    dim = model.get_sentence_embedding_dimension()
+    return model, dim
+
+
+def _l2_normalize(mat: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12
+    return mat / norms
+
+
 class VectorIndex:
     def __init__(self, model_name: str):
         self.model_name = model_name
-        self.model = SentenceTransformer(model_name)
-        self.dim = self.model.get_sentence_embedding_dimension()
+        self.model = None  # lazy init
+        self.dim = None
         self.index = None
         self.chunks: List[DocChunk] = []
+
+    def _ensure_model(self):
+        if self.model is None:
+            # If flag is set, use OpenAI embeddings regardless of HF status
+            if FORCE_OPENAI_EMBEDDINGS:
+                self.model = "openai-embeddings"
+                self.dim = 1536  # text-embedding-3-small dimension
+                return
+            try:
+                self.model, self.dim = _get_st_embedder(self.model_name)
+            except Exception as e:
+                # Fallback to OpenAI embeddings if HF is rate-limited or blocked
+                if os.getenv("OPENAI_API_KEY"):
+                    self.model = "openai-embeddings"
+                    self.dim = 1536
+                else:
+                    raise e
 
     def _ensure_index(self):
         if faiss is None:
             raise RuntimeError("faiss is not installed. Please `pip install faiss-cpu`. ")
         if self.index is None:
+            # determine dim
+            if self.dim is None:
+                self._ensure_model()
             self.index = faiss.IndexFlatIP(self.dim)  # cosine via normalized vectors
+
+    def _embed(self, texts: List[str]) -> np.ndarray:
+        self._ensure_model()
+        if self.model == "openai-embeddings":
+            from openai import OpenAI
+            client = OpenAI()
+            # Batch to avoid token limits
+            vecs: List[List[float]] = []
+            B = 64
+            for i in range(0, len(texts), B):
+                batch = texts[i:i+B]
+                resp = client.embeddings.create(model="text-embedding-3-small", input=batch)
+                vecs.extend([d.embedding for d in resp.data])
+            emb = np.array(vecs, dtype="float32")
+        else:
+            emb = np.array(self.model.encode(texts, normalize_embeddings=False, show_progress_bar=False), dtype="float32")
+        return _l2_normalize(emb).astype("float32")
 
     def add_documents(self, docs: List[Tuple[str, str]]):
         # docs: List[(source_name, text)]
@@ -114,12 +192,25 @@ class VectorIndex:
         if not new_chunks:
             return
         # embed
-        embeddings = self.model.encode([c.text for c in new_chunks], normalize_embeddings=True, show_progress_bar=False)
+        embeddings = self._embed([c.text for c in new_chunks])
         self._ensure_index()
-        self.index.add(np.array(embeddings, dtype="float32"))
+        # if index dim doesn't match (e.g., switching providers), rebuild
+        if self.index.d != embeddings.shape[1]:
+            self.index = faiss.IndexFlatIP(embeddings.shape[1])
+        self.index.add(embeddings)
         self.chunks.extend(new_chunks)
 
     def search(self, query: str, top_k: int = TOP_K) -> List[Tuple[float, DocChunk]]:
+        if self.index is None or len(self.chunks) == 0:
+            return []
+        q = self._embed([query])
+        D, I = self.index.search(np.array(q, dtype="float32"), top_k)
+        results = []
+        for score, idx in zip(D[0].tolist(), I[0].tolist()):
+            if idx == -1:
+                continue
+            results.append((float(score), self.chunks[idx]))
+        return results
         if self.index is None or len(self.chunks) == 0:
             return []
         q = self.model.encode([query], normalize_embeddings=True)
@@ -204,8 +295,8 @@ def init_state():
 
 def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="📚", layout="wide")
-    st.title("RAGnostic‑Lite")
-    st.caption("A RAG demo with transparency and basic prompt‑injection checks.")
+    st.title("📚 RAGnostic‑Lite")
+    st.caption("A tiny RAG demo with transparency and basic prompt‑injection checks.")
 
     init_state()
 
@@ -285,6 +376,10 @@ def main():
                 st.caption("Flagged by simple keyword heuristics; tune the threshold and patterns for your data.")
 
     st.divider()
+    st.markdown(
+        "Made for learning. Hardening ideas: role‑based source trust, domain allowlists, sandboxed tool use,\n"
+        "structured outputs with citations, logging & eval harness."
+    )
 
 
 if __name__ == "__main__":
